@@ -801,14 +801,19 @@ function renderGrid() {
 
   // Floor header row
   html += '<thead><tr class="fhr"><th class="time-th floor-th" style="top:0;z-index:21"> </th>';
-  for (const [flLabel, cols] of floorGroups) {
-    html += `<th class="floor-th" colspan="${cols.length}" style="top:0">${escH(flLabel)}</th>`;
-  }
+  floorGroups.forEach(([flKey, cols], gi) => {
+    const divider = gi > 0 ? 'box-shadow:-3px 0 0 0 #4a6fff;' : '';
+    html += `<th class="floor-th" colspan="${cols.length}" style="top:0;${divider}">${escH(floorDisplayLabel(flKey))}</th>`;
+  });
   html += '</tr>';
-  // Slot header row
+
+  // Slot header row — also add divider on first slot of each floor group
+  const floorFirstCols = new Set(floorGroups.map(([,cols]) => cols[0]));
   html += '<tr class="shr"><th class="time-th" style="top:27px">Time</th>';
   for (const col of allCols) {
-    html += `<th style="top:27px">${escH(col.label)}</th>`;
+    const isFirst = floorFirstCols.has(col);
+    const divider = isFirst ? 'box-shadow:-3px 0 0 0 #4a6fff;' : '';
+    html += `<th style="top:27px;${divider}">${escH(col.label)}</th>`;
   }
   html += '</tr></thead><tbody>';
 
@@ -825,6 +830,13 @@ function renderGrid() {
     return layoutColumn(colStudents[ci]);
   });
 
+  // Track which column indices are the first in their floor group (for divider lines)
+  const floorDividerCols = new Set();
+  let lastFloor = null;
+  allCols.forEach((col, ci) => {
+    if (col.floor !== lastFloor) { if (lastFloor !== null) floorDividerCols.add(ci); lastFloor = col.floor; }
+  });
+
   timeSlots.forEach((t, ri) => {
     const isHour = t % 60 === 0;
     html += `<tr>`;
@@ -832,6 +844,7 @@ function renderGrid() {
 
     allCols.forEach((col, ci) => {
       if (colRendered[ci]) return;
+      const divStyle = floorDividerCols.has(ci) ? 'box-shadow:-3px 0 0 0 #4a6fff;' : '';
 
       if (col.type === 'slot') {
         colRendered[ci] = true;
@@ -870,7 +883,7 @@ function renderGrid() {
           </div>`;
         });
 
-        html += `<td rowspan="${spanRows}" style="height:${tdH}px;min-height:${tdH}px;overflow:visible;position:relative;padding:0;vertical-align:top;">
+        html += `<td rowspan="${spanRows}" style="height:${tdH}px;min-height:${tdH}px;overflow:visible;position:relative;padding:0;vertical-align:top;${divStyle}">
           ${blocksHtml}
         </td>`;
 
@@ -910,7 +923,7 @@ function renderGrid() {
           </div>`;
         });
 
-        html += `<td rowspan="${spanRows}" class="office-cell" style="height:${tdH}px;min-height:${tdH}px;overflow:visible;position:relative;padding:0;vertical-align:top;">
+        html += `<td rowspan="${spanRows}" class="office-cell" style="height:${tdH}px;min-height:${tdH}px;overflow:visible;position:relative;padding:0;vertical-align:top;${divStyle}">
           ${blocksHtml}
         </td>`;
       }
@@ -950,15 +963,22 @@ function buildColumns(dateRecs) {
 
   const allCols = [...dataSlots, ...officeCols];
 
-  // Group into floors for header
+  // Group into floors for header — slot cols grouped by floor, offices always last as own group
   const floorMap = new Map();
-  allCols.forEach(col => {
-    const fl = floorDisplayLabel(col.floor);
-    if (!floorMap.has(fl)) floorMap.set(fl, []);
-    floorMap.get(fl).push(col);
+  dataSlots.forEach(col => {
+    const flKey = col.floor || 'other';
+    if (!floorMap.has(flKey)) floorMap.set(flKey, []);
+    floorMap.get(flKey).push(col);
   });
+  if (officeCols.length) floorMap.set('offices', officeCols);
 
-  const floorGroups = [...floorMap.entries()];
+  // Sort floor groups by floorOrder (offices always last)
+  const floorGroups = [...floorMap.entries()]
+    .sort(([a],[b]) => {
+      if (a === 'offices') return 1;
+      if (b === 'offices') return -1;
+      return floorOrder(a) - floorOrder(b);
+    });
   return { floorGroups, allCols };
 }
 
@@ -982,6 +1002,7 @@ function registerFloorLabel(floor, room) {
   _floorLabelCache[floor] = label || floor;
 }
 function floorDisplayLabel(f) {
+  if (f === 'offices') return 'Office Rooms';
   return _floorLabelCache[f] || f || 'Other';
 }
 
