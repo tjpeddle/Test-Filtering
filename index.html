@@ -289,6 +289,8 @@ table.sched td.office-cell { background: #fafbff; }
       <button class="filter-btn fpend" onclick="setFilter('pending')"><div class="fb-dot"></div>Pending<span class="fb-count" id="fcPend">0</span></button>
       <button class="filter-btn fconf" onclick="setFilter('conflict')"><div class="fb-dot"></div>Conflicts<span class="fb-count" id="fcConf">0</span></button>
       <button class="filter-btn fremv" onclick="setFilter('removed')"><div class="fb-dot"></div>Not in Latest<span class="fb-count" id="fcRemv">0</span></button>
+      <div id="unassignedWarn" style="display:none;margin-top:8px;padding:6px 10px;background:#fff3cd;border:1px solid #f0ad00;border-radius:6px;font-size:10px;color:#7a5000;font-family:var(--mono);line-height:1.4;"></div>
+      <div id="removedWarn" style="display:none;margin-top:6px;padding:6px 10px;background:#fff1e0;border:1px solid #b85c00;border-radius:6px;font-size:10px;color:#7a3d00;font-family:var(--mono);line-height:1.4;"></div>
     </div>
   </div>
 
@@ -487,6 +489,11 @@ function splitCSV(line) {
 function processRows(rows, fileType) {
   if (!rows.length) return;
 
+  // Reset floor caches so new building names get fresh labels/colors
+  Object.keys(_floorLabelCache).forEach(k => delete _floorLabelCache[k]);
+  Object.keys(_floorColorCache).forEach(k => delete _floorColorCache[k]);
+  _floorColorIdx = 0;
+
   // Snapshot existing records of this type for "removed" detection
   const prevOfType = allRecords.filter(r => r.fileType === fileType).map(r => r.student + '|' + r.date);
 
@@ -510,13 +517,15 @@ function processRows(rows, fileType) {
     const durMin   = (endMin !== null && startMin !== null) ? (endMin - startMin) : parseDurMins(durRaw);
     const slotNum  = parseInt((slot||'').replace(/\D/g,'')) || 999;
     const floor    = ROOM_FLOOR_MAP[room] || detectFloor(room);
+    registerFloorLabel(floor, room);
 
     // If room matches a known office room number, treat as office assignment (no slot column)
     const matchedOffice = officeRooms.find(o =>
       o.room.trim().toLowerCase() === room.trim().toLowerCase() ||
       o.room.trim() === room.trim()
     );
-    const isOfficeAssignment = !!matchedOffice || (!slot && room && !/smith library|computer lab|finals/i.test(room));
+    // Office assignment: matched an office room, OR has no slot and room looks like a room number (not a named testing room)
+    const isOfficeAssignment = !!matchedOffice || (!slot && room && floor === 'other' && /^\d+/.test(room.trim()));
 
     return {
       student, room, slot: isOfficeAssignment ? '' : slot, slotNum, floor: matchedOffice ? matchedOffice.floor : floor,
@@ -554,9 +563,12 @@ function cleanCourse(c) {
 }
 
 function detectFloor(room) {
-  if (/3rd/i.test(room)) return '3rd';
-  if (/4th/i.test(room)) return '4th';
+  if (!room) return 'other';
+  // Computer lab always first
   if (/computer/i.test(room)) return 'computer';
+  // Extract any floor indicator: "1st", "2nd", "3rd", "4th", "5th" etc or "Floor 1" etc
+  const m = room.match(/(\d+(?:st|nd|rd|th))\s*floor|\bfloor\s*(\d+)\b|(\d+(?:st|nd|rd|th))\b/i);
+  if (m) return (m[1] || m[2] || m[3]).toLowerCase();
   return 'other';
 }
 
@@ -604,22 +616,76 @@ function getDates() {
 }
 
 function updateStats() {
-  const appr = allRecords.filter(r => r.status==='approved' && !r.conflict).length;
-  const pend = allRecords.filter(r => r.status==='pending'  && !r.conflict).length;
-  const conf = allRecords.filter(r => r.conflict).length;
-  const remv = allRecords.filter(r => r.removed).length;
-  const rooms= new Set(allRecords.filter(r=>!r.removed).map(r=>r.room)).size;
-  document.getElementById('sTotal').textContent  = allRecords.filter(r=>!r.removed).length;
+  const appr     = allRecords.filter(r => r.status==='approved' && !r.removed).length;
+  const pend     = allRecords.filter(r => r.status==='pending'  && !r.removed).length;
+  const conf     = allRecords.filter(r => r.conflict).length;
+  const remv     = allRecords.filter(r => r.removed).length;
+  const unassign = allRecords.filter(r => !r.removed && !r.slot && !r.isOfficeAssignment).length;
+  const rooms    = new Set(allRecords.filter(r=>!r.removed && r.slot).map(r=>r.room)).size;
+  const total    = allRecords.filter(r=>!r.removed).length;
+  document.getElementById('sTotal').textContent  = total;
   document.getElementById('sAppr').textContent   = appr;
   document.getElementById('sPend').textContent   = pend;
   document.getElementById('sConf').textContent   = conf;
   document.getElementById('sRemv').textContent   = remv;
   document.getElementById('sRooms').textContent  = rooms;
-  document.getElementById('fcAll').textContent   = allRecords.length;
+  document.getElementById('fcAll').textContent   = total;
   document.getElementById('fcAppr').textContent  = appr;
   document.getElementById('fcPend').textContent  = pend;
   document.getElementById('fcConf').textContent  = conf;
   document.getElementById('fcRemv').textContent  = remv;
+  // Show unassigned warning with expandable student list
+  const el = document.getElementById('unassignedWarn');
+  if (el) {
+    const unassignRecs = allRecords.filter(r => !r.removed && !r.slot && !r.isOfficeAssignment);
+    if (unassignRecs.length === 0) { el.style.display = 'none'; }
+    else {
+      const byDate = {};
+      unassignRecs.forEach(r => { if (!byDate[r.date]) byDate[r.date] = []; byDate[r.date].push(r); });
+      const listHtml = Object.entries(byDate).sort(([a],[b])=>new Date(a)-new Date(b)).map(([date, recs]) => {
+        const dateLabel = new Date(date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+        const rows = recs.map(r => `<div style="padding:2px 0 2px 8px;border-left:2px solid #f0ad00;margin:2px 0;font-size:10px">
+          <span style="font-weight:600">${escH(r.student)}</span>
+          <span style="color:#a07000;margin-left:4px">${r.startRaw}–${r.endRaw}</span>
+        </div>`).join('');
+        return `<div style="margin-top:5px"><div style="font-weight:700;font-size:10px;color:#7a5000">${dateLabel} (${recs.length})</div>${rows}</div>`;
+      }).join('');
+      el.style.display = 'block';
+      el.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+          <span>⚠ ${unassignRecs.length} student${unassignRecs.length>1?'s':''} have no slot assigned</span>
+          <span style="font-size:11px;opacity:0.7">▼</span>
+        </div>
+        <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto">${listHtml}</div>
+      `;
+    }
+  }
+  // Show removed warning with expandable student list
+  const elR = document.getElementById('removedWarn');
+  if (elR) {
+    const removedRecs = allRecords.filter(r => r.removed);
+    if (removedRecs.length === 0) { elR.style.display = 'none'; }
+    else {
+      const byDate = {};
+      removedRecs.forEach(r => { if (!byDate[r.date]) byDate[r.date] = []; byDate[r.date].push(r); });
+      const listHtml = Object.entries(byDate).sort(([a],[b])=>new Date(a)-new Date(b)).map(([date, recs]) => {
+        const dateLabel = new Date(date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+        const rows = recs.map(r => `<div style="padding:2px 0 2px 8px;border-left:2px solid #b85c00;margin:2px 0;font-size:10px">
+          <span style="font-weight:600">${escH(r.student)}</span>
+          <span style="color:#7a3d00;margin-left:4px">${r.startRaw}–${r.endRaw}</span>
+        </div>`).join('');
+        return `<div style="margin-top:5px"><div style="font-weight:700;font-size:10px;color:#7a3d00">${dateLabel} (${recs.length})</div>${rows}</div>`;
+      }).join('');
+      elR.style.display = 'block';
+      elR.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+          <span>⚠ ${removedRecs.length} student${removedRecs.length>1?'s':''} not in latest upload</span>
+          <span style="font-size:11px;opacity:0.7">▼</span>
+        </div>
+        <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto">${listHtml}</div>
+      `;
+    }
+  }
 }
 
 function buildDateTabs() {
@@ -697,13 +763,13 @@ function renderGrid() {
   const totalRows  = timeSlots.length;
   const totalH     = totalRows * 30;
 
-  // Pre-group students by column index — always use ALL records for this date
+  // Pre-group students by column index — use filtered recs so filter buttons work
   // Office-assigned students (room = "407" etc) go into their matching office column
   const colStudents = allCols.map(col => {
     if (col.type === 'slot') {
-      return dateRecs.filter(r => !r.isOfficeAssignment && r.slot === col.slot && r.room === col.room);
+      return recs.filter(r => !r.isOfficeAssignment && r.slot === col.slot && r.room === col.room);
     } else if (col.type === 'office') {
-      return dateRecs.filter(r => r.isOfficeAssignment &&
+      return recs.filter(r => r.isOfficeAssignment &&
         r.room.trim().toLowerCase() === col.room.trim().toLowerCase());
     }
     return [];
@@ -897,17 +963,26 @@ function buildColumns(dateRecs) {
 }
 
 function floorOrder(f) {
-  if (f === 'computer') return 1;
-  if (f === '3rd')      return 2;
-  if (f === '4th')      return 3;
-  return 4;
+  if (f === 'computer') return 0;
+  // Extract number from floor key like "1st", "2nd", "3rd", "4th"
+  const n = parseInt((f||'').replace(/\D/g,''));
+  if (!isNaN(n)) return n;
+  return 999;
 }
 
+// Cache display labels derived from actual room names in the data
+const _floorLabelCache = {};
+function registerFloorLabel(floor, room) {
+  if (_floorLabelCache[floor] || !room) return;
+  if (floor === 'computer') { _floorLabelCache[floor] = 'Computer Lab'; return; }
+  if (floor === 'other')    { _floorLabelCache[floor] = 'Other'; return; }
+  // Build label from room name: strip slot/number suffixes, keep building + floor
+  // e.g. "FINALS Johnson Hall 3rd Floor" → "Johnson Hall — 3rd Floor"
+  let label = room.replace(/^finals\s*/i,'').replace(/\s*slot[-\s]*\d+/i,'').trim();
+  _floorLabelCache[floor] = label || floor;
+}
 function floorDisplayLabel(f) {
-  if (f === '3rd')      return 'Smith Library — 3rd Floor';
-  if (f === '4th')      return 'Smith Library — 4th Floor';
-  if (f === 'computer') return 'Computer Lab';
-  return f || 'Other';
+  return _floorLabelCache[f] || f || 'Other';
 }
 
 function slotLabel(slot) {
@@ -962,9 +1037,6 @@ document.addEventListener('mousemove', e => {
 // Color palette — exact match to CSS
 const XL = {
   hdrTime:   '10141E', hdrSlot:   '1A1F2E',
-  fl3bg:     '1B2A6B', fl3tx:     '7EA5FF',
-  fl4bg:     '1B3A5C', fl4tx:     '7EC8FF',
-  flLbg:     '1A3A2A', flLtx:     '7EFFD4',
   timeHrBg:  'E8EDF7', timeHrTx:  '1A1F2E',
   timeBg:    'F8F9FC', timeTx:    '6B7494',
   apprBg:    'E6F5ED', apprTx:    '1A7A4A', apprBrd: '1A7A4A',
@@ -977,8 +1049,29 @@ const XL = {
   white:     'FFFFFF',
 };
 
-function xlFloorBg(f) { return f==='3rd'?XL.fl3bg : f==='4th'?XL.fl4bg : f==='computer'?XL.flLbg : XL.hdrSlot; }
-function xlFloorTx(f) { return f==='3rd'?XL.fl3tx : f==='4th'?XL.fl4tx : f==='computer'?XL.flLtx : XL.white; }
+// Dynamic floor color palette — cycles through these for any floor encountered
+const FLOOR_PALETTE = [
+  { bg: '1A3A2A', tx: '7EFFD4' }, // computer lab — teal
+  { bg: '1B2A6B', tx: '7EA5FF' }, // 1st floor — blue
+  { bg: '1B3A5C', tx: '7EC8FF' }, // 2nd floor — light blue
+  { bg: '3A1B5C', tx: 'C8AAFF' }, // 3rd floor — purple
+  { bg: '5C1B3A', tx: 'FFAACC' }, // 4th floor — rose
+  { bg: '3A3A1B', tx: 'FFFFA0' }, // 5th floor — yellow
+  { bg: '1B3A3A', tx: 'A0FFEE' }, // 6th floor — cyan
+];
+const _floorColorCache = {};
+let _floorColorIdx = 0;
+function xlFloorColors(f) {
+  if (f === 'computer') return FLOOR_PALETTE[0];
+  if (!_floorColorCache[f]) {
+    // Assign next palette color (skip index 0 = computer)
+    _floorColorIdx++;
+    _floorColorCache[f] = FLOOR_PALETTE[_floorColorIdx % FLOOR_PALETTE.length];
+  }
+  return _floorColorCache[f];
+}
+function xlFloorBg(f) { return xlFloorColors(f).bg; }
+function xlFloorTx(f) { return xlFloorColors(f).tx; }
 
 function getStatusColors(r) {
   if (r.removed)  return [XL.remvBg, XL.remvTx, XL.remvBrd];
@@ -1309,10 +1402,11 @@ async function exportExcel() {
   srow([[1,`Generated: ${new Date().toLocaleString()}`, xfSumVal]]);
   sr2++;
   srow([[1,'Metric',xfSumLbl],[2,'Count',xfSumLbl]]);
-  [['Total Exams', allRecords.filter(r=>!r.removed).length],
-   ['Approved',    allRecords.filter(r=>r.status==='approved'&&!r.conflict&&!r.removed).length],
-   ['Pending',     allRecords.filter(r=>r.status==='pending'&&!r.conflict&&!r.removed).length],
-   ['Conflicts',   allRecords.filter(r=>r.conflict).length],
+  [['Total Exams',          allRecords.filter(r=>!r.removed).length],
+   ['Approved',             allRecords.filter(r=>r.status==='approved'&&!r.removed).length],
+   ['Pending',              allRecords.filter(r=>r.status==='pending'&&!r.removed).length],
+   ['Room Conflicts',       allRecords.filter(r=>r.conflict).length],
+   ['Unassigned (no slot)', allRecords.filter(r=>!r.removed&&!r.slot&&!r.isOfficeAssignment).length],
    ['Not in Latest Upload', allRecords.filter(r=>r.removed).length]
   ].forEach(([k,v]) => srow([[1,k,xfSumVal],[2,String(v),xfSumVal]]));
   sr2++;
@@ -1326,6 +1420,15 @@ async function exportExcel() {
     srow([[1,'NOT IN LATEST UPLOAD',xfSumHdr],[2,'',xfSumHdr],[3,'',xfSumHdr],[4,'',xfSumHdr],[5,'',xfSumHdr]]);
     srow([[1,'Date',xfSumLbl],[2,'Student',xfSumLbl],[3,'Room',xfSumLbl],[4,'Slot',xfSumLbl],[5,'Last Seen',xfSumLbl]]);
     removedRecs.forEach(r => srow([[1,r.date],[2,r.student],[3,r.room],[4,r.slot],[5,`${r.startRaw}–${r.endRaw}`]]));
+    sr2++;
+  }
+  const unassignRecs = allRecords.filter(r=>!r.removed&&!r.slot&&!r.isOfficeAssignment);
+  if (unassignRecs.length) {
+    srow([[1,'UNASSIGNED — NO SLOT',xfSumHdr],[2,'',xfSumHdr],[3,'',xfSumHdr],[4,'',xfSumHdr],[5,'',xfSumHdr]]);
+    srow([[1,'Date',xfSumLbl],[2,'Student',xfSumLbl],[3,'Room',xfSumLbl],[4,'Status',xfSumLbl],[5,'Time',xfSumLbl]]);
+    unassignRecs
+      .sort((a,b)=>new Date(a.date)-new Date(b.date)||a.student.localeCompare(b.student))
+      .forEach(r => srow([[1,r.date],[2,r.student],[3,r.room],[4,r.status],[5,`${r.startRaw}–${r.endRaw}`]]));
   }
   summXml += `</sheetData>
 </worksheet>`;
