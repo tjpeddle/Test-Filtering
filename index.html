@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Accommodate Exam Scheduler</title>
+<meta name="description" content="OARS Exam Scheduler — HPU Testing Center exam scheduling tool">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
+<title>OARS Exam Scheduler — HPU Testing Center</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
@@ -238,11 +240,12 @@ table.sched td.office-cell { background: #fafbff; }
 <body>
 
 <header>
-  <div class="logo">Accommodate <span>Scheduler</span></div>
+  <div class="logo">OARS <span>Exam Scheduler</span></div>
   <div class="hdr-div"></div>
-  <div class="hdr-sub">Testing Center</div>
+  <div class="hdr-sub">Testing Center · High Point University</div>
   <div class="hdr-right">
     <span id="lastUpload" style="font-family:var(--mono);font-size:10px;color:rgba(255,255,255,0.35)"></span>
+    <span style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.2);margin-left:12px">v2.0</span>
   </div>
 </header>
 
@@ -250,6 +253,8 @@ table.sched td.office-cell { background: #fafbff; }
 
 <!-- ═══ SIDEBAR ═══ -->
 <aside class="sidebar">
+
+  <div id="sessionNotice" style="display:none;margin:10px 12px 0;padding:8px 12px;background:#e8f4ff;border:1px solid #2655d4;border-radius:6px;font-size:10px;color:#1a3a8a;font-family:var(--mono);line-height:1.5;"></div>
 
   <div class="sb-sec">
     <div class="sb-title">Upload Files</div>
@@ -320,6 +325,7 @@ table.sched td.office-cell { background: #fafbff; }
 
   <div class="sb-sec" style="margin-top:auto">
     <button class="export-btn" id="exportBtn" onclick="exportExcel()" disabled>⬇ Export Excel</button>
+    <button onclick="clearHistory()" style="margin-top:8px;width:100%;padding:7px;background:transparent;border:1px solid var(--border2);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer;font-family:var(--mono)" onmouseover="this.style.borderColor='#c0281a';this.style.color='#c0281a'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">🗑 Clear Saved History</button>
   </div>
 
 </aside>
@@ -334,7 +340,7 @@ table.sched td.office-cell { background: #fafbff; }
     <div class="empty-state" id="emptyState">
       <div class="empty-icon">📋</div>
       <div class="empty-title">No data loaded</div>
-      <div class="empty-sub">Upload your Approved and/or Pending Accommodate exports from the sidebar.</div>
+      <div class="empty-sub">Upload your Approved and/or Pending Accommodate exports using the sidebar to get started.</div>
     </div>
     <div class="grid-wrap" id="gridWrap" style="display:none">
       <div id="gridContainer"></div>
@@ -400,6 +406,7 @@ let uploadCount   = { approved: 0, pending: 0 };
 // ══════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
   renderOfficeList();
+  restoreSessionBaseline();
 });
 
 // ══════════════════════════════════════════════════
@@ -554,7 +561,65 @@ function processRows(rows, fileType) {
 
   uploadCount[fileType]++;
   detectConflicts();
+  saveToLocalStorage();
   refreshUI();
+}
+
+// ══════════════════════════════════════════════════
+// LOCAL STORAGE — persist last session for day-over-day removed detection
+// ══════════════════════════════════════════════════
+const LS_KEY = 'oars_scheduler_session';
+
+function saveToLocalStorage() {
+  try {
+    const payload = {
+      savedAt: new Date().toISOString(),
+      records: allRecords.filter(r => !r.removed) // only save active records as baseline
+    };
+    localStorage.setItem(LS_KEY, JSON.stringify(payload));
+  } catch(e) { console.warn('localStorage save failed:', e); }
+}
+
+function loadFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch(e) { return null; }
+}
+
+function clearHistory() {
+  if (!confirm('Clear saved session history? This will reset the "Not in Latest Upload" baseline.')) return;
+  try { localStorage.removeItem(LS_KEY); } catch(e) {}
+  allRecords = [];
+  uploadCount = { approved: 0, pending: 0 };
+  const notice = document.getElementById('sessionNotice');
+  if (notice) notice.style.display = 'none';
+  refreshUI();
+}
+
+function restoreSessionBaseline() {
+  const saved = loadFromLocalStorage();
+  if (!saved || !saved.records || !saved.records.length) return;
+
+  const savedDate = new Date(saved.savedAt);
+  const today = new Date();
+  const daysDiff = (today - savedDate) / (1000 * 60 * 60 * 24);
+
+  // Restore as baseline — mark all as "previous session" so removed detection works
+  // Only restore if saved within last 14 days (safety valve)
+  if (daysDiff > 14) return;
+
+  allRecords = saved.records.map(r => ({ ...r, removed: false, conflict: false, conflictWith: [] }));
+
+  // Show a subtle restore notice
+  const notice = document.getElementById('sessionNotice');
+  if (notice) {
+    const d = savedDate.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    const t = savedDate.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    notice.style.display = 'block';
+    notice.innerHTML = `↩ Previous session restored (${d} at ${t}) — load today's files to see what changed`;
+  }
 }
 
 function cleanCourse(c) {
