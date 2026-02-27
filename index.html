@@ -546,10 +546,12 @@ function processRows(rows, fileType) {
     };
   }).filter(Boolean);
 
-  // Mark removed: was in previous upload of same type, not in new upload
-  const newKeys = new Set(parsed.map(r => r.student + '|' + r.date));
+  // Mark removed: was in previous upload of same type AND same date, not in new upload
+  // Only flag within dates that appear in the new upload — different date ranges are never flagged
+  const newDates = new Set(parsed.map(r => r.date));
+  const newKeys  = new Set(parsed.map(r => r.student + '|' + r.date));
   const removedRecords = allRecords
-    .filter(r => r.fileType === fileType && !newKeys.has(r.student + '|' + r.date))
+    .filter(r => r.fileType === fileType && newDates.has(r.date) && !newKeys.has(r.student + '|' + r.date))
     .map(r => ({ ...r, removed: true, status: 'removed' }));
 
   // Replace records of this file type, keep other type + removed
