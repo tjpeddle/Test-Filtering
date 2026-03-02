@@ -504,17 +504,21 @@ function processRows(rows, fileType) {
   // Snapshot existing records of this type for "removed" detection
   const prevOfType = allRecords.filter(r => r.fileType === fileType).map(r => r.student + '|' + r.date);
 
+  // Helper to read a field by multiple possible column names (different Accommodate export templates)
+  const col = (row, ...names) => { for (const n of names) { if (row[n] !== undefined && row[n] !== '') return row[n]; } return ''; };
+
   const parsed = rows.map(row => {
-    const student  = row['Student']           || '';
-    const room     = row['Testing Room']      || '';
-    const slot     = row['Testing Room Slot'] || '';
-    const dateRaw  = row['Testing Date']      || '';
-    const startRaw = row['Testing Time']      || '';
-    const endRaw   = row['End Time']          || '';
-    const durRaw   = row['Test Length']       || '';
-    const course   = cleanCourse(row['Course'] || '');
-    const accom    = row['Accommodations']    || '';
-    const exam     = row['Exams']             || '';
+    const student  = col(row, 'Student');
+    const room     = col(row, 'Testing Room');
+    const slot     = col(row, 'Testing Room Slot');
+    const dateRaw  = col(row, 'Testing Date');
+    const startRaw = col(row, 'Testing Time');
+    const endRaw   = col(row, 'End Time', 'Testing End Time', 'EndTime');
+    const durRaw   = col(row, 'Test Length', 'Default Length', 'Class Exam Length');
+    const course   = cleanCourse(col(row, 'Course'));
+    const accom    = col(row, 'Accommodations', 'Accommodations Needed', 'Accommodation');
+    const exam     = col(row, 'Exams', 'Exam');
+    const status   = col(row, 'Status', 'Test Status');
 
     if (!student) return null;
 
