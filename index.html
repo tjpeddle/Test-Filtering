@@ -209,7 +209,14 @@ table.sched td.office-cell { background: #fafbff; }
 .sb-badge.paper    { background: #555; color: #fff; }
 
 
-/* EMPTY */
+/* SEARCH */
+#studentSearch:focus { border-color: var(--accent); }
+.search-result { padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; border: 1px solid var(--border2); margin-bottom: 4px; background: var(--bg); transition: background 0.1s; }
+.search-result:hover { background: var(--accent-light); border-color: var(--accent); }
+.search-result-name { font-weight: 600; color: var(--text); }
+.search-result-detail { color: var(--muted); font-size: 10px; font-family: var(--mono); margin-top:1px; }
+.sb-highlight { outline: 3px solid #f0ad00 !important; outline-offset: 2px; z-index: 20 !important; animation: pulse-highlight 1.5s ease-in-out 3; }
+@keyframes pulse-highlight { 0%,100% { outline-color: #f0ad00; } 50% { outline-color: #ff6b00; } }
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--muted); gap: 10px; padding: 40px; }
 .empty-icon { font-size: 44px; opacity: 0.35; }
 .empty-title { font-family: var(--sans); font-size: 17px; font-weight: 600; color: var(--text); opacity: 0.45; }
@@ -284,6 +291,19 @@ table.sched td.office-cell { background: #fafbff; }
       <div class="stat-box"><div class="stat-num r" id="sRemv">0</div><div class="stat-lbl">Removed</div></div>
       <div class="stat-box"><div class="stat-num" style="color:var(--accent)" id="sRooms">0</div><div class="stat-lbl">Rooms</div></div>
     </div>
+  </div>
+
+  <div class="sb-sec">
+    <div class="sb-title">Search Student</div>
+    <div style="position:relative">
+      <input id="studentSearch" type="text" placeholder="Type a name..." 
+        oninput="searchStudent(this.value)"
+        onkeydown="if(event.key==='Escape'){clearSearch();this.value=''}"
+        style="width:100%;box-sizing:border-box;padding:7px 30px 7px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font-size:12px;font-family:var(--sans);outline:none;">
+      <span id="searchClear" onclick="clearSearch();document.getElementById('studentSearch').value=''" 
+        style="display:none;position:absolute;right:8px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--muted);font-size:14px;font-weight:700">✕</span>
+    </div>
+    <div id="searchResults" style="margin-top:6px;max-height:200px;overflow-y:auto;"></div>
   </div>
 
   <div class="sb-sec">
@@ -1107,8 +1127,90 @@ function slotLabel(slot) {
 }
 
 // ══════════════════════════════════════════════════
-// TOOLTIP
+// STUDENT SEARCH
 // ══════════════════════════════════════════════════
+let searchHighlightEls = [];
+
+function searchStudent(query) {
+  const resultsEl = document.getElementById('searchResults');
+  const clearEl   = document.getElementById('searchClear');
+  clearEl.style.display = query ? 'block' : 'none';
+
+  // Clear previous highlights
+  searchHighlightEls.forEach(el => el.classList.remove('sb-highlight'));
+  searchHighlightEls = [];
+
+  if (!query || query.trim().length < 2) { resultsEl.innerHTML = ''; return; }
+
+  const q = query.trim().toLowerCase();
+  const matches = allRecords.filter(r =>
+    !r.removed && r.student && r.student.toLowerCase().includes(q)
+  );
+
+  // Deduplicate by student name — show each student once with all their dates
+  const byStudent = {};
+  matches.forEach(r => {
+    if (!byStudent[r.student]) byStudent[r.student] = [];
+    byStudent[r.student].push(r);
+  });
+
+  if (!Object.keys(byStudent).length) {
+    resultsEl.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:4px 2px">No students found</div>`;
+    return;
+  }
+
+  resultsEl.innerHTML = Object.entries(byStudent).map(([name, recs]) => {
+    const dates = recs.map(r => {
+      const d = new Date(r.date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+      return `${d} · ${r.startRaw}–${r.endRaw}`;
+    }).join('<br>');
+    return `<div class="search-result" onclick="jumpToStudent('${escH(name)}')">
+      <div class="search-result-name">${escH(name)}</div>
+      <div class="search-result-detail">${dates}</div>
+    </div>`;
+  }).join('');
+}
+
+function jumpToStudent(name) {
+  // Clear old highlights
+  searchHighlightEls.forEach(el => el.classList.remove('sb-highlight'));
+  searchHighlightEls = [];
+
+  // Find all dates this student appears on
+  const studentRecs = allRecords.filter(r => !r.removed && r.student === name);
+  if (!studentRecs.length) return;
+
+  // Navigate to their first date
+  const firstDate = studentRecs.sort((a,b) => new Date(a.date)-new Date(b.date))[0].date;
+  if (currentDate !== firstDate) {
+    currentDate = firstDate;
+    updateDateTabs();
+    renderGrid();
+  }
+
+  // After render, find and highlight their blocks
+  setTimeout(() => {
+    document.querySelectorAll('.sb-name').forEach(el => {
+      if (el.textContent.trim() === name) {
+        const block = el.closest('.sb');
+        if (block) {
+          block.classList.add('sb-highlight');
+          searchHighlightEls.push(block);
+          block.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+    });
+  }, 50);
+}
+
+function clearSearch() {
+  document.getElementById('searchResults').innerHTML = '';
+  document.getElementById('searchClear').style.display = 'none';
+  searchHighlightEls.forEach(el => el.classList.remove('sb-highlight'));
+  searchHighlightEls = [];
+}
+
+
 function showTip(e, tipId) {
   const d = tipStore[tipId];
   if (!d) return;
