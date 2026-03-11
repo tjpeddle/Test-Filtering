@@ -209,6 +209,22 @@ table.sched td.office-cell { background: #fafbff; }
 .sb-badge.paper    { background: #555; color: #fff; }
 
 
+/* EXAM TYPE */
+.et-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; vertical-align:middle; flex-shrink:0; }
+.et-btn { display:inline-flex;align-items:center;font-size:9px;font-family:var(--mono);font-weight:700;letter-spacing:.6px;padding:2px 6px;border-radius:4px;cursor:pointer;border:1px solid transparent;line-height:1.4;margin-top:3px;transition:opacity .15s; }
+.et-btn:hover { opacity:.8; }
+.et-paper  { background:#e8f0fe;border-color:#4285f4;color:#1a5fcc; }
+.et-online { background:#e6f4ea;border-color:#34a853;color:#1a7a3a; }
+.et-unset  { background:var(--bg);border-color:var(--border);color:var(--muted); }
+.et-dot.paper  { background:#4285f4; }
+.et-dot.online { background:#34a853; }
+.et-dot.unset  { background:#ccc; }
+.needs-type-row { display:flex;align-items:center;justify-content:space-between;padding:4px 2px;border-bottom:1px solid var(--border2);gap:6px; }
+.needs-type-row:last-child { border-bottom:none; }
+.needs-type-link { font-size:11px;color:var(--accent);cursor:pointer;text-decoration:underline;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+.needs-type-link:hover { color:var(--accent-dark,#2a4cc0); }
+.needs-type-date { font-size:9px;color:var(--muted);font-family:var(--mono);white-space:nowrap; }
+
 /* SEARCH */
 #studentSearch:focus { border-color: var(--accent); }
 .search-result { padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; border: 1px solid var(--border2); margin-bottom: 4px; background: var(--bg); transition: background 0.1s; }
@@ -321,6 +337,14 @@ table.sched td.office-cell { background: #fafbff; }
     </div>
   </div>
 
+  <div class="sb-sec" id="needsTypeSec" style="display:none">
+    <div class="sb-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Exam Type Needed</span>
+      <span id="needsTypeCount" style="font-size:10px;color:var(--accent);font-family:var(--mono)"></span>
+    </div>
+    <div id="needsTypeList" style="max-height:220px;overflow-y:auto;"></div>
+  </div>
+
   <div class="sb-sec">
     <div class="sb-title">Legend</div>
     <div class="legend-row"><div class="legend-sw" style="background:#e6f5ed;border-color:#1a7a4a44"></div>Approved</div>
@@ -423,6 +447,7 @@ let currentFilter = 'all';
 let currentDate   = null;
 let uploadCount   = { approved: 0, pending: 0 };
 let dismissedRemoved = new Set(); // student|date keys dismissed by user
+let examTypes = {};  // key: student|date|slot → 'paper'|'online'
 
 // ══════════════════════════════════════════════════
 // INIT
@@ -606,7 +631,8 @@ function saveToLocalStorage() {
     const payload = {
       savedAt: new Date().toISOString(),
       records: allRecords.filter(r => !r.removed),
-      dismissed: [...dismissedRemoved]
+      dismissed: [...dismissedRemoved],
+      examTypes
     };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
   } catch(e) { console.warn('localStorage save failed:', e); }
@@ -618,6 +644,50 @@ function loadFromLocalStorage() {
     if (!raw) return null;
     return JSON.parse(raw);
   } catch(e) { return null; }
+}
+
+function renderNeedsTypeSidebar() {
+  const sec  = document.getElementById('needsTypeSec');
+  const list = document.getElementById('needsTypeList');
+  const cnt  = document.getElementById('needsTypeCount');
+  if (!sec || !list) return;
+
+  // All active slotted students without a type set yet
+  const unset = allRecords.filter(r =>
+    !r.removed && (r.slot || r.isOfficeAssignment) && !examTypes[etKey(r)]
+  ).sort((a,b) => new Date(a.date)-new Date(b.date) || a.student.localeCompare(b.student));
+
+  if (!unset.length) {
+    sec.style.display = 'none';
+    return;
+  }
+
+  sec.style.display = 'block';
+  cnt.textContent = unset.length + ' remaining';
+
+  list.innerHTML = unset.map(r => {
+    const d = new Date(r.date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    const ek = escH(etKey(r));
+    const dn = escH(r.date);
+    const nn = escH(r.student);
+    return `<div class="needs-type-row">
+      <span class="needs-type-link" onclick="jumpToStudentDate('${nn}','${dn}')" title="${nn} — ${d}">${escH(r.student)}</span>
+      <span class="needs-type-date">${d}</span>
+    </div>`;
+  }).join('');
+}
+
+function etKey(r) { return r.student + '|' + r.date + '|' + (r.slot || r.officeRoom || r.room || ''); }
+
+function setExamType(key, type) {
+  if (examTypes[key] === type) {
+    delete examTypes[key];
+  } else {
+    examTypes[key] = type;
+  }
+  saveToLocalStorage();
+  renderGrid();
+  renderNeedsTypeSidebar();
 }
 
 function dismissRemoved(key) {
@@ -640,6 +710,7 @@ function clearHistory() {
   try { localStorage.removeItem(LS_KEY); } catch(e) {}
   allRecords = [];
   dismissedRemoved = new Set();
+  examTypes = {};
   uploadCount = { approved: 0, pending: 0 };
   const notice = document.getElementById('sessionNotice');
   if (notice) notice.style.display = 'none';
@@ -660,6 +731,7 @@ function restoreSessionBaseline() {
 
   allRecords = saved.records.map(r => ({ ...r, removed: false, conflict: false, conflictWith: [] }));
   dismissedRemoved = new Set(saved.dismissed || []);
+  examTypes = saved.examTypes || {};
 
   // Show a subtle restore notice
   const notice = document.getElementById('sessionNotice');
@@ -722,6 +794,7 @@ function refreshUI() {
   if (!currentDate || !getDates().includes(currentDate)) currentDate = getDates()[0] || null;
   updateDateTabs();
   renderGrid();
+  renderNeedsTypeSidebar();
   document.getElementById('exportBtn').disabled = allRecords.length === 0;
 }
 
@@ -987,6 +1060,12 @@ function renderGrid() {
             status: student.status, removed: student.removed,
             conflict: student.conflict, conflictWith: student.conflictWith
           });
+          const ek = etKey(student);
+          const et = examTypes[ek] || '';
+          const etHtml = !student.removed ? `<div style="display:flex;gap:4px;margin-top:3px;flex-wrap:wrap">
+            <span class="et-btn ${et==='paper'?'et-paper':'et-unset'}" onclick="event.stopPropagation();setExamType('${escH(ek)}','paper')"><span class="et-dot ${et==='paper'?'paper':'unset'}"></span>PAPER</span>
+            <span class="et-btn ${et==='online'?'et-online':'et-unset'}" onclick="event.stopPropagation();setExamType('${escH(ek)}','online')"><span class="et-dot ${et==='online'?'online':'unset'}"></span>ONLINE</span>
+          </div>` : '';
           blocksHtml += `<div class="sb ${cls}" style="
               position:absolute;
               top:${topPx}px; height:${heightPx}px;
@@ -997,6 +1076,7 @@ function renderGrid() {
             <div class="sb-course">${escH(courseShort)}</div>
             <div class="sb-accom">${escH(student.accom||'')}</div>
             ${badges.join('')}
+            ${etHtml}
           </div>`;
         });
 
@@ -1030,6 +1110,12 @@ function renderGrid() {
             status: student.status, removed: student.removed,
             conflict: student.conflict, conflictWith: student.conflictWith
           });
+          const ek2 = etKey(student);
+          const et2 = examTypes[ek2] || '';
+          const etHtml2 = !student.removed ? `<div style="display:flex;gap:4px;margin-top:3px;flex-wrap:wrap">
+            <span class="et-btn ${et2==='paper'?'et-paper':'et-unset'}" onclick="event.stopPropagation();setExamType('${escH(ek2)}','paper')"><span class="et-dot ${et2==='paper'?'paper':'unset'}"></span>PAPER</span>
+            <span class="et-btn ${et2==='online'?'et-online':'et-unset'}" onclick="event.stopPropagation();setExamType('${escH(ek2)}','online')"><span class="et-dot ${et2==='online'?'online':'unset'}"></span>ONLINE</span>
+          </div>` : '';
           blocksHtml += `<div class="sb ${cls}" style="
               position:absolute;
               top:${topPx}px; height:${heightPx}px;
@@ -1040,6 +1126,7 @@ function renderGrid() {
             <div class="sb-course">${escH(courseShort)}</div>
             <div class="sb-accom">${escH(student.accom||'')}</div>
             ${badges.join('')}
+            ${etHtml2}
           </div>`;
         });
 
