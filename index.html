@@ -680,7 +680,11 @@ function renderOnlineStudentsList() {
   if (!el) return;
 
   const onlineRecs = allRecords
-    .filter(r => !r.removed && (r.slot || r.isOfficeAssignment) && examTypes[etKey(r)] === 'online')
+    .filter(r => {
+      if (r.removed || (!r.slot && !r.isOfficeAssignment)) return false;
+      const v = examTypes[etKey(r)];
+      return Array.isArray(v) ? v.includes('online') : v === 'online';
+    })
     .sort((a,b) => a.student.localeCompare(b.student) || new Date(a.date) - new Date(b.date));
 
   if (!onlineRecs.length) { el.style.display = 'none'; return; }
@@ -742,10 +746,18 @@ function renderNeedsTypeSidebar() {
 function etKey(r) { return r.student + '|' + r.date + '|' + (r.slot || r.officeRoom || r.room || ''); }
 
 function setExamType(key, type) {
-  if (examTypes[key] === type) {
+  const current = examTypes[key] || [];
+  const arr = Array.isArray(current) ? current : [current]; // migrate old string values
+  const idx = arr.indexOf(type);
+  if (idx >= 0) {
+    arr.splice(idx, 1);
+  } else {
+    arr.push(type);
+  }
+  if (arr.length === 0) {
     delete examTypes[key];
   } else {
-    examTypes[key] = type;
+    examTypes[key] = arr;
   }
   saveToLocalStorage();
   renderGrid();
@@ -1127,11 +1139,13 @@ function renderGrid() {
             conflict: student.conflict, conflictWith: student.conflictWith
           });
           const ek = etKey(student);
-          const et = examTypes[ek] || '';
+          const etArr = Array.isArray(examTypes[ek]) ? examTypes[ek] : (examTypes[ek] ? [examTypes[ek]] : []);
+          const hasPaper  = etArr.includes('paper');
+          const hasOnline = etArr.includes('online');
           const ekJS = escJS(ek);
           const etHtml = !student.removed ? `<div style="display:flex;gap:4px;margin-top:3px;flex-wrap:wrap">
-            <span class="et-btn ${et==='paper'?'et-paper':'et-unset'}" onclick="event.stopPropagation();setExamType('${ekJS}','paper')"><span class="et-dot ${et==='paper'?'paper':'unset'}"></span>PAPER</span>
-            <span class="et-btn ${et==='online'?'et-online':'et-unset'}" onclick="event.stopPropagation();setExamType('${ekJS}','online')"><span class="et-dot ${et==='online'?'online':'unset'}"></span>ONLINE</span>
+            <span class="et-btn ${hasPaper?'et-paper':'et-unset'}" onclick="event.stopPropagation();setExamType('${ekJS}','paper')"><span class="et-dot ${hasPaper?'paper':'unset'}"></span>PAPER</span>
+            <span class="et-btn ${hasOnline?'et-online':'et-unset'}" onclick="event.stopPropagation();setExamType('${ekJS}','online')"><span class="et-dot ${hasOnline?'online':'unset'}"></span>ONLINE</span>
           </div>` : '';
           blocksHtml += `<div class="sb ${cls}" data-slot="${escH(student.slot||'')}" style="
               position:absolute;
@@ -1178,11 +1192,13 @@ function renderGrid() {
             conflict: student.conflict, conflictWith: student.conflictWith
           });
           const ek2 = etKey(student);
-          const et2 = examTypes[ek2] || '';
+          const et2Arr = Array.isArray(examTypes[ek2]) ? examTypes[ek2] : (examTypes[ek2] ? [examTypes[ek2]] : []);
+          const hasPaper2  = et2Arr.includes('paper');
+          const hasOnline2 = et2Arr.includes('online');
           const ek2JS = escJS(ek2);
           const etHtml2 = !student.removed ? `<div style="display:flex;gap:4px;margin-top:3px;flex-wrap:wrap">
-            <span class="et-btn ${et2==='paper'?'et-paper':'et-unset'}" onclick="event.stopPropagation();setExamType('${ek2JS}','paper')"><span class="et-dot ${et2==='paper'?'paper':'unset'}"></span>PAPER</span>
-            <span class="et-btn ${et2==='online'?'et-online':'et-unset'}" onclick="event.stopPropagation();setExamType('${ek2JS}','online')"><span class="et-dot ${et2==='online'?'online':'unset'}"></span>ONLINE</span>
+            <span class="et-btn ${hasPaper2?'et-paper':'et-unset'}" onclick="event.stopPropagation();setExamType('${ek2JS}','paper')"><span class="et-dot ${hasPaper2?'paper':'unset'}"></span>PAPER</span>
+            <span class="et-btn ${hasOnline2?'et-online':'et-unset'}" onclick="event.stopPropagation();setExamType('${ek2JS}','online')"><span class="et-dot ${hasOnline2?'online':'unset'}"></span>ONLINE</span>
           </div>` : '';
           blocksHtml += `<div class="sb ${cls}" data-slot="${escH(student.officeRoom||student.room||'')}" style="
               position:absolute;
@@ -1778,9 +1794,13 @@ async function exportExamTypeDoc() {
     return r.slot && !r.isOfficeAssignment ? `${base} · ${r.slot}` : base;
   };
   const fmtType = key => {
-    const t = examTypes[key];
-    if (t === 'paper')  return { label:'PAPER',  color:'4285F4' };
-    if (t === 'online') return { label:'ONLINE',  color:'34A853' };
+    const v = examTypes[key];
+    const arr = Array.isArray(v) ? v : (v ? [v] : []);
+    const hasPaper  = arr.includes('paper');
+    const hasOnline = arr.includes('online');
+    if (hasPaper && hasOnline) return { label:'PAPER + ONLINE', color:'7B2D8B' };
+    if (hasPaper)  return { label:'PAPER',    color:'4285F4' };
+    if (hasOnline) return { label:'ONLINE',   color:'34A853' };
     return { label:'NOT SET', color:'999999' };
   };
 
@@ -1825,7 +1845,7 @@ async function exportExamTypeDoc() {
   }).join('');
 
   const today = new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
-  const totalSet   = recs.filter(r => examTypes[etKey(r)]).length;
+  const totalSet   = recs.filter(r => { const v = examTypes[etKey(r)]; return Array.isArray(v) ? v.length > 0 : !!v; }).length;
   const totalUnset = recs.length - totalSet;
 
   const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
