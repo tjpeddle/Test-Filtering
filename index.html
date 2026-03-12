@@ -8,6 +8,7 @@
 <title>OARS Exam Scheduler — HPU Testing Center</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
 
@@ -309,6 +310,28 @@ table.sched td.office-cell { background: #fafbff; }
       <div class="stat-box"><div class="stat-num r" id="sRemv">0</div><div class="stat-lbl">Removed</div></div>
       <div class="stat-box"><div class="stat-num" style="color:var(--accent)" id="sRooms">0</div><div class="stat-lbl">Rooms</div></div>
     </div>
+  </div>
+
+  <div class="sb-sec">
+    <div class="sb-title">Auto-Set Online from PDFs</div>
+    <div id="pdfDropZone" onclick="document.getElementById('pdfZipInput').click()"
+      style="border:1.5px dashed var(--border);border-radius:8px;padding:10px 8px;text-align:center;cursor:pointer;background:var(--bg);transition:all .15s"
+      onmouseover="this.style.borderColor='#1a5fcc';this.style.background='#e8f0fe22'"
+      onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--bg)'"
+      ondragover="event.preventDefault();this.style.borderColor='#1a5fcc'"
+      ondragleave="this.style.borderColor='var(--border)'"
+      ondrop="event.preventDefault();handlePdfZip(event.dataTransfer.files[0])">
+      <div style="font-size:18px;margin-bottom:3px">📦</div>
+      <div style="font-size:11px;color:var(--muted)">Drop booking PDFs .zip<br>or click to browse</div>
+    </div>
+    <input type="file" id="pdfZipInput" accept=".zip" style="display:none" onchange="handlePdfZip(this.files[0])">
+    <div id="pdfProgress" style="display:none;margin-top:8px">
+      <div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:4px" id="pdfProgressText">Processing...</div>
+      <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden">
+        <div id="pdfProgressBar" style="height:100%;background:#1a5fcc;width:0%;transition:width .2s"></div>
+      </div>
+    </div>
+    <div id="pdfSummary" style="display:none;margin-top:8px;font-size:10px;font-family:var(--mono);line-height:1.6"></div>
   </div>
 
   <div class="sb-sec">
@@ -1484,6 +1507,162 @@ function colLetter(n) { // 0-indexed
   let s = ''; n++;
   while (n > 0) { s = String.fromCharCode(64 + (n%26||26)) + s; n = Math.floor((n-1)/26); }
   return s;
+}
+
+// ══════════════════════════════════════════════════
+// PDF ZIP PROCESSING — Auto-set ONLINE from booking PDFs
+// ══════════════════════════════════════════════════
+
+// Configure PDF.js worker
+if (typeof pdfjsLib !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+async function handlePdfZip(file) {
+  if (!file) return;
+  if (!file.name.endsWith('.zip')) { showNotif('Please select a .zip file.'); return; }
+
+  // Show progress
+  const prog     = document.getElementById('pdfProgress');
+  const progText = document.getElementById('pdfProgressText');
+  const progBar  = document.getElementById('pdfProgressBar');
+  const summary  = document.getElementById('pdfSummary');
+  prog.style.display    = 'block';
+  summary.style.display = 'none';
+  progBar.style.width   = '0%';
+  progText.textContent  = 'Reading zip...';
+
+  // Ensure PDF.js worker is set after script loads
+  if (typeof pdfjsLib !== 'undefined') {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+
+  try {
+    const arrayBuf = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(arrayBuf);
+
+    // Get all PDF files inside
+    const pdfFiles = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.pdf'));
+    if (!pdfFiles.length) { showNotif('No PDFs found in zip.'); prog.style.display='none'; return; }
+
+    let setCount = 0, skippedPaper = 0, skippedUnknown = 0, noMatch = 0;
+    const skippedNames = [];
+    const noMatchNames = [];
+
+    for (let i = 0; i < pdfFiles.length; i++) {
+      const f = pdfFiles[i];
+      const pct = Math.round((i / pdfFiles.length) * 100);
+      progBar.style.width = pct + '%';
+      progText.textContent = `Processing ${i+1} of ${pdfFiles.length}...`;
+
+      // Parse name + date from filename e.g. Austin_Fluhr_2026-04-24_08_00.pdf
+      const fname = f.name.split('/').pop().replace('.pdf','');
+      const { studentName, dateStr } = parseBookingFilename(fname);
+
+      // Extract PDF text
+      const pdfBytes = await f.async('arraybuffer');
+      const text = await extractPdfText(pdfBytes);
+
+      // Find the exam format answer
+      const format = detectExamFormat(text);
+
+      if (format === 'online') {
+        // Find matching record
+        const rec = findRecord(studentName, dateStr);
+        if (rec) {
+          examTypes[etKey(rec)] = 'online';
+          setCount++;
+        } else {
+          noMatch++;
+          noMatchNames.push(studentName || fname);
+        }
+      } else if (format === 'paper') {
+        skippedPaper++;
+        skippedNames.push(studentName || fname);
+      } else {
+        skippedUnknown++;
+        noMatchNames.push((studentName || fname) + ' (format unclear)');
+      }
+    }
+
+    progBar.style.width = '100%';
+    progText.textContent = 'Done!';
+
+    // Save and re-render
+    saveToLocalStorage();
+    renderGrid();
+    renderNeedsTypeSidebar();
+
+    // Show summary
+    summary.style.display = 'block';
+    summary.innerHTML = `
+      <div style="color:#34a853;font-weight:700">✓ ${setCount} set to ONLINE</div>
+      <div style="color:var(--muted)">${skippedPaper} skipped (Paper)</div>
+      ${skippedUnknown ? `<div style="color:var(--muted)">${skippedUnknown} format unclear</div>` : ''}
+      ${noMatch ? `<div style="color:#b85c00">${noMatch} no grid match</div>` : ''}
+      ${noMatchNames.length ? `<div style="margin-top:4px;color:var(--muted);font-size:9px">${noMatchNames.slice(0,5).map(n=>escH(n)).join('<br>')}${noMatchNames.length>5?`<br>+${noMatchNames.length-5} more`:''}</div>` : ''}
+    `;
+
+    setTimeout(() => { prog.style.display = 'none'; }, 1500);
+
+  } catch(e) {
+    console.error('PDF zip error:', e);
+    showNotif('Error reading zip: ' + e.message);
+    prog.style.display = 'none';
+  }
+}
+
+function parseBookingFilename(fname) {
+  // e.g. Austin_Fluhr_2026-04-24_08_00
+  // Last three segments are date + time: YYYY-MM-DD_HH_MM
+  const parts = fname.split('_');
+  // Find the date segment (YYYY-MM-DD pattern)
+  let dateIdx = -1;
+  for (let i = 0; i < parts.length; i++) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(parts[i])) { dateIdx = i; break; }
+  }
+  if (dateIdx === -1) return { studentName: fname, dateStr: null };
+  const nameParts = parts.slice(0, dateIdx);
+  const studentName = nameParts.join(' '); // "Austin Fluhr"
+  const dateStr = parts[dateIdx];          // "2026-04-24"
+  return { studentName, dateStr };
+}
+
+async function extractPdfText(arrayBuffer) {
+  try {
+    if (typeof pdfjsLib === 'undefined') return '';
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let text = '';
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      text += content.items.map(i => i.str).join(' ') + ' ';
+    }
+    return text;
+  } catch(e) { return ''; }
+}
+
+function detectExamFormat(text) {
+  // Look for "What is the format of this exam?" answer
+  // PDF text will have something like "What is the format of this exam? Online" or "Paper"
+  const t = text.toLowerCase();
+  // Find the question and grab the answer after it
+  const qIdx = t.indexOf('what is the format of this exam');
+  if (qIdx === -1) return 'unknown';
+  const after = t.slice(qIdx, qIdx + 200);
+  if (/\bonline\b/.test(after)) return 'online';
+  if (/\bpaper\b/.test(after)) return 'paper';
+  return 'unknown';
+}
+
+function findRecord(studentName, dateStr) {
+  if (!studentName) return null;
+  const nameLower = studentName.toLowerCase().trim();
+  return allRecords.find(r =>
+    !r.removed &&
+    r.student.toLowerCase().trim() === nameLower &&
+    (!dateStr || r.date === dateStr)
+  ) || null;
 }
 
 async function exportExamTypeDoc() {
