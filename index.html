@@ -1632,26 +1632,45 @@ async function extractPdfText(arrayBuffer) {
   try {
     if (typeof pdfjsLib === 'undefined') return '';
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    let text = '';
+    let items = [];
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
       const content = await page.getTextContent();
-      text += content.items.map(i => i.str).join(' ') + ' ';
+      items = items.concat(content.items.map(i => i.str));
     }
-    return text;
+    // Join with space AND also produce a no-space version for matching
+    return items.join(' ');
   } catch(e) { return ''; }
 }
 
 function detectExamFormat(text) {
-  // Look for "What is the format of this exam?" answer
-  // PDF text will have something like "What is the format of this exam? Online" or "Paper"
-  const t = text.toLowerCase();
-  // Find the question and grab the answer after it
+  // Normalize: collapse whitespace, lowercase
+  const t = text.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  // Find the question — look for it with flexible spacing
   const qIdx = t.indexOf('what is the format of this exam');
   if (qIdx === -1) return 'unknown';
-  const after = t.slice(qIdx, qIdx + 200);
-  if (/\bonline\b/.test(after)) return 'online';
-  if (/\bpaper\b/.test(after)) return 'paper';
+
+  // Grab a window after the question mark
+  const window = t.slice(qIdx, qIdx + 300);
+
+  // Remove the question text itself and look at what follows
+  // Pattern: "what is the format of this exam?" then answer
+  // Answer could be jammed against ? or have a space
+  const afterQ = window.replace(/what is the format of this exam\s*\??\s*/i, '');
+
+  if (/^online|[?:]\s*online|\bonline\b/.test(afterQ)) return 'online';
+  if (/^paper|[?:]\s*paper|\bpaper\b/.test(afterQ)) return 'paper';
+
+  // Also try no-space version in case PDF.js jams tokens together
+  const noSpace = t.replace(/\s/g, '');
+  const qIdx2 = noSpace.indexOf('whatistheformatofthisexam');
+  if (qIdx2 !== -1) {
+    const after2 = noSpace.slice(qIdx2 + 25, qIdx2 + 80);
+    if (after2.includes('online')) return 'online';
+    if (after2.includes('paper'))  return 'paper';
+  }
+
   return 'unknown';
 }
 
