@@ -151,6 +151,13 @@ header {
 }
 .date-tab:hover { border-color: var(--accent); color: var(--accent); }
 .date-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.summary-btn {
+  font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .6px;
+  padding: 5px 11px; border-radius: 6px; border: 1.5px solid var(--border);
+  background: transparent; color: var(--muted); cursor: pointer; transition: all 0.12s;
+  text-transform: uppercase; margin-left: auto;
+}
+.summary-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* GRID */
 .table-area { flex: 1; overflow: auto; }
@@ -410,6 +417,20 @@ table.sched td.office-cell { background: #fafbff; }
   <div class="topbar">
     <span class="topbar-label">Date:</span>
     <div class="date-tabs" id="dateTabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+    <button class="summary-btn" id="summaryBtn" onclick="openSummary()" style="display:none">📊 Summary</button>
+  </div>
+
+  <!-- Summary Modal -->
+  <div id="summaryOverlay" onclick="closeSummary()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:900;"></div>
+  <div id="summaryModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:901;
+    background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px 28px;
+    min-width:340px;max-width:480px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+      <div style="font-family:var(--mono);font-size:13px;font-weight:700;color:var(--accent);letter-spacing:.5px;text-transform:uppercase">📊 Exam Day Summary</div>
+      <span onclick="closeSummary()" style="cursor:pointer;font-size:18px;color:var(--muted);line-height:1" title="Close">✕</span>
+    </div>
+    <div id="summaryContent"></div>
+    <div style="margin-top:16px;font-family:var(--mono);font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:10px" id="summaryTotal"></div>
   </div>
   <div class="table-area">
     <div class="empty-state" id="emptyState">
@@ -951,6 +972,53 @@ function updateStats() {
       `;
     }
   }
+  // Show/hide summary button
+  const sb = document.getElementById('summaryBtn');
+  if (sb) sb.style.display = allRecords.filter(r=>!r.removed).length > 0 ? 'block' : 'none';
+}
+
+function openSummary() {
+  const active = allRecords.filter(r => !r.removed);
+  if (!active.length) return;
+
+  // Count exams per day
+  const byDate = {};
+  active.forEach(r => {
+    if (!byDate[r.date]) byDate[r.date] = 0;
+    byDate[r.date]++;
+  });
+
+  const dates = Object.keys(byDate).sort((a,b) => new Date(a)-new Date(b));
+  const max = Math.max(...Object.values(byDate));
+  const grand = active.length;
+
+  const rows = dates.map(d => {
+    const count = byDate[d];
+    const label = new Date(d).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    const barPct = Math.round((count / max) * 100);
+    // Color: light when low, accent when high
+    const intensity = Math.round(60 + (count / max) * 155);
+    const barColor = `rgb(51, 0, ${Math.round(114 * (count/max) + 40)})`;
+    return `<div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+        <span style="font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text)">${label}</span>
+        <span style="font-family:var(--mono);font-size:13px;font-weight:800;color:var(--accent)">${count}</span>
+      </div>
+      <div style="background:var(--border);border-radius:4px;height:10px;overflow:hidden">
+        <div style="height:100%;width:${barPct}%;background:var(--accent);border-radius:4px;transition:width .3s;opacity:${0.4 + 0.6*(count/max)}"></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('summaryContent').innerHTML = rows;
+  document.getElementById('summaryTotal').textContent = `Total across all days: ${grand} exam${grand!==1?'s':''}`;
+  document.getElementById('summaryOverlay').style.display = 'block';
+  document.getElementById('summaryModal').style.display  = 'block';
+}
+
+function closeSummary() {
+  document.getElementById('summaryOverlay').style.display = 'none';
+  document.getElementById('summaryModal').style.display  = 'none';
 }
 
 function buildDateTabs() {
